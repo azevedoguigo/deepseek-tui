@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
+	"time"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/google/uuid"
@@ -21,16 +23,21 @@ const (
 	configFile = "config.json"
 )
 
+var (
+	chatsMutex sync.RWMutex
+)
+
 type Message struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
 }
 
 type ChatSession struct {
-	ID       uuid.UUID `json:"id"`
-	Title    string    `json:"title"`
-	Messages []Message `json:"messages"`
-	FilePath string    `json:"-"`
+	ID        uuid.UUID `json:"id"`
+	Title     string    `json:"title"`
+	Messages  []Message `json:"messages"`
+	FilePath  string    `json:"-"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 type OllamaRequest struct {
@@ -57,7 +64,6 @@ func saveChat(session *ChatSession) error {
 
 	home, _ := os.UserHomeDir()
 	if session.FilePath == "" {
-		session.ID = uuid.New()
 		session.FilePath = filepath.Join(
 			home,
 			configDir,
@@ -105,6 +111,20 @@ func loadChats() (map[string]*ChatSession, error) {
 	}
 
 	return chats, nil
+}
+
+func deleteChat(chat *ChatSession, chats map[string]*ChatSession) error {
+	if chat.FilePath == "" {
+		return fmt.Errorf("chat path not found")
+	}
+
+	if err := os.Remove(chat.FilePath); err != nil {
+		return err
+	}
+
+	delete(chats, chat.ID.String())
+
+	return nil
 }
 
 func updateChatDisplay(chatView *tview.TextView, chat *ChatSession) {
@@ -168,11 +188,13 @@ func queryOllamaStream(messages []Message, callback func(string)) error {
 func main() {
 	app := tview.NewApplication()
 
+	chatsMutex.Lock()
 	chats, err := loadChats()
 	if err != nil {
 		fmt.Printf("Error to load chats %v:", err)
 		chats = make(map[string]*ChatSession)
 	}
+	chatsMutex.Unlock()
 
 	mainFlex := tview.NewFlex()
 
@@ -181,15 +203,19 @@ func main() {
 		AddItem("New Chat", "", 'n', nil)
 	chatList.SetBorder(true).SetTitle("Chats")
 
-	var chatOrder []string
+	var chatOrder []*ChatSession
+	chatsMutex.RLock()
 	for _, chat := range chats {
-		chatOrder = append(chatOrder, chat.ID.String())
+		chatOrder = append(chatOrder, chat)
 	}
-	sort.Strings(chatOrder)
+	chatsMutex.RUnlock()
 
-	for _, id := range chatOrder {
-		chat := chats[id]
-		chatList.AddItem(chat.Title, "", 0, nil)
+	sort.Slice(chatOrder, func(i, j int) bool {
+		return chatOrder[i].CreatedAt.Before(chatOrder[j].CreatedAt)
+	})
+
+	for _, chat := range chatOrder {
+		chatList.AddItem(chat.Title, chat.ID.String(), 0, nil)
 	}
 
 	chatView := tview.NewTextView().
@@ -218,11 +244,16 @@ func main() {
 
 			if currentChat == nil {
 				currentChat = &ChatSession{
-					Title:    fmt.Sprintf("Chat %d", len(chats)+1),
-					Messages: []Message{},
+					ID:        uuid.New(),
+					Title:     fmt.Sprintf("Chat %d", len(chats)+1),
+					Messages:  []Message{},
+					CreatedAt: time.Now(),
 				}
+
+				chatsMutex.Lock()
 				chats[currentChat.ID.String()] = currentChat
-				chatList.AddItem(currentChat.Title, "", 0, nil)
+				chatList.AddItem(currentChat.Title, currentChat.ID.String(), 0, nil)
+				chatsMutex.Unlock()
 			}
 
 			currentChat.Messages = append(currentChat.Messages, Message{
@@ -234,7 +265,6 @@ func main() {
 				Role:    "assistant",
 				Content: "",
 			})
-
 			updateChatDisplay(chatView, currentChat)
 
 			history := make([]Message, len(currentChat.Messages))
@@ -259,6 +289,8 @@ func main() {
 					})
 				}
 
+				chatsMutex.Lock()
+				defer chatsMutex.Unlock()
 				if err := saveChat(currentChat); err != nil {
 					app.QueueUpdateDraw(func() {
 						currentChat.Messages[assistantIndex].Content += "\n\n[red]Error to save " + err.Error() + "[-]"
@@ -269,18 +301,59 @@ func main() {
 		}
 	})
 
+	chatList.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if event.Key() == tcell.KeyDelete || event.Rune() == 'd' {
+			currentItem := chatList.GetCurrentItem()
+			if currentItem > 0 {
+				_, secondary := chatList.GetItemText(currentItem)
+
+				modal := tview.NewModal().
+					SetText("Delete this chat permanently?").
+					AddButtons([]string{"Cancel", "Delete"}).
+					SetDoneFunc(func(buttonIndex int, buttonLabel string) {
+						if buttonLabel == "Delete" {
+							chatsMutex.Lock()
+							defer chatsMutex.Unlock()
+
+							if chat, exists := chats[secondary]; exists {
+								if err := deleteChat(chat, chats); err == nil {
+									chatList.RemoveItem(currentItem)
+
+									if currentChat != nil && currentChat.ID.String() == secondary {
+										currentChat = nil
+										chatView.Clear()
+									}
+								} else {
+									app.QueueUpdateDraw(func() {
+										chatView.SetText(fmt.Sprintf("[red]Error deleting chat: %v[-]", err))
+									})
+								}
+							}
+						}
+
+						app.SetRoot(mainFlex, true)
+					})
+
+				app.SetRoot(modal, false)
+			}
+
+			return nil
+		}
+
+		return event
+	})
+
 	chatList.SetSelectedFunc(func(index int, title, secondary string, shortcut rune) {
 		if index == 0 {
 			currentChat = nil
 			chatView.Clear()
 			inputField.SetText("")
 		} else {
-			for _, chat := range chats {
-				if chat.Title == title {
-					currentChat = chat
-					updateChatDisplay(chatView, currentChat)
-					break
-				}
+			chatsMutex.RLock()
+			defer chatsMutex.RUnlock()
+			if chat, exists := chats[secondary]; exists {
+				currentChat = chat
+				updateChatDisplay(chatView, currentChat)
 			}
 		}
 	})
