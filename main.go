@@ -1,10 +1,10 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 
 	"github.com/gdamore/tcell/v2"
@@ -46,40 +46,44 @@ func updateChatDisplay(chatView *tview.TextView, chat *ChatSession) {
 	chatView.ScrollToEnd()
 }
 
-func queryOllama(prompt string, history []Message) (string, error) {
+func queryOllamaSteam(messages []Message, callback func(string)) error {
 	requestData := OllamaRequest{
 		Model:    "deepseek-r1",
-		Prompt:   prompt,
-		Stream:   false,
-		Messages: history,
+		Stream:   true,
+		Messages: messages,
 	}
 
 	requestBody, err := json.Marshal(requestData)
 	if err != nil {
-		return "", err
+		return err
 	}
 
 	response, err := http.Post(
-		"http://localhost:11434/api/generate",
+		"http://localhost:11434/api/chat",
 		"application/json",
 		bytes.NewBuffer(requestBody),
 	)
 	if err != nil {
-		return "", err
+		return err
 	}
 	defer response.Body.Close()
 
-	body, err := io.ReadAll(response.Body)
-	if err != nil {
-		return "", err
+	scanner := bufio.NewScanner(response.Body)
+	for scanner.Scan() {
+		var data map[string]interface{}
+
+		if err := json.Unmarshal(scanner.Bytes(), &data); err != nil {
+			return err
+		}
+
+		if message, ok := data["message"].(map[string]interface{}); ok {
+			if content, ok := message["content"].(string); ok {
+				callback(content)
+			}
+		}
 	}
 
-	var result map[string]interface{}
-	if err := json.Unmarshal(body, &result); err != nil {
-		return "", err
-	}
-
-	return result["response"].(string), nil
+	return scanner.Err()
 }
 
 func main() {
@@ -131,30 +135,34 @@ func main() {
 				Content: userInput,
 			})
 
+			currentChat.Messages = append(currentChat.Messages, Message{
+				Role:    "assistant",
+				Content: "",
+			})
+
 			updateChatDisplay(chatView, currentChat)
 
+			history := make([]Message, len(currentChat.Messages))
+			copy(history, currentChat.Messages)
+
 			go func() {
-				response, err := queryOllama(userInput, currentChat.Messages)
+				assistantIndex := len(history) - 1
+
+				err := queryOllamaSteam(history[:len(history)-1], func(chunck string) {
+					app.QueueUpdateDraw(func() {
+						if len(currentChat.Messages) > assistantIndex {
+							currentChat.Messages[assistantIndex].Content += chunck
+
+							updateChatDisplay(chatView, currentChat)
+						}
+					})
+				})
+
 				if err != nil {
 					app.QueueUpdateDraw(func() {
-						currentChat.Messages = append(currentChat.Messages, Message{
-							Role:    "assistant",
-							Content: fmt.Sprintf("Error: %v", err),
-						})
-						updateChatDisplay(chatView, currentChat)
+						currentChat.Messages[assistantIndex].Content += "\n\n[red]" + "Error: " + err.Error()
 					})
-
-					return
 				}
-
-				app.QueueUpdateDraw(func() {
-					currentChat.Messages = append(currentChat.Messages, Message{
-						Role:    "assistant",
-						Content: response,
-					})
-
-					updateChatDisplay(chatView, currentChat)
-				})
 			}()
 		}
 	})
