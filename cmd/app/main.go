@@ -1,15 +1,12 @@
 package main
 
 import (
-	"bufio"
-	"bytes"
-	"encoding/json"
 	"fmt"
-	"net/http"
 	"sort"
 	"sync"
 	"time"
 
+	"github.com/azevedoguigo/deepseek-tui/internal/ollama"
 	"github.com/azevedoguigo/deepseek-tui/internal/storage"
 	"github.com/gdamore/tcell/v2"
 	"github.com/google/uuid"
@@ -25,13 +22,6 @@ const (
 var (
 	chatsMutex sync.RWMutex
 )
-
-type OllamaRequest struct {
-	Model    string            `json:"model"`
-	Prompt   string            `json:"prompt"`
-	Stream   bool              `json:"stream"`
-	Messages []storage.Message `json:"messages"`
-}
 
 func updateChatDisplay(chatView *tview.TextView, chat *storage.ChatSession) {
 	chatView.Clear()
@@ -49,46 +39,6 @@ func updateChatDisplay(chatView *tview.TextView, chat *storage.ChatSession) {
 	}
 
 	chatView.ScrollToEnd()
-}
-
-func queryOllamaStream(messages []storage.Message, callback func(string)) error {
-	requestData := OllamaRequest{
-		Model:    "deepseek-r1",
-		Stream:   true,
-		Messages: messages,
-	}
-
-	requestBody, err := json.Marshal(requestData)
-	if err != nil {
-		return err
-	}
-
-	response, err := http.Post(
-		"http://localhost:11434/api/chat",
-		"application/json",
-		bytes.NewBuffer(requestBody),
-	)
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-
-	scanner := bufio.NewScanner(response.Body)
-	for scanner.Scan() {
-		var data map[string]interface{}
-
-		if err := json.Unmarshal(scanner.Bytes(), &data); err != nil {
-			return err
-		}
-
-		if message, ok := data["message"].(map[string]interface{}); ok {
-			if content, ok := message["content"].(string); ok {
-				callback(content)
-			}
-		}
-	}
-
-	return scanner.Err()
 }
 
 func main() {
@@ -179,7 +129,7 @@ func main() {
 			go func() {
 				assistantIndex := len(history) - 1
 
-				err := queryOllamaStream(history[:len(history)-1], func(chunck string) {
+				err := ollama.QueryOllamaStream(history[:len(history)-1], func(chunck string) {
 					app.QueueUpdateDraw(func() {
 						if len(currentChat.Messages) > assistantIndex {
 							currentChat.Messages[assistantIndex].Content += chunck
