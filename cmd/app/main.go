@@ -118,7 +118,7 @@ func main() {
 			})
 
 			currentChat.Messages = append(currentChat.Messages, storage.Message{
-				Role:    "assistant",
+				Role:    "DeepSeek",
 				Content: "",
 			})
 			updateChatDisplay(chatView, currentChat)
