@@ -25,17 +25,20 @@ var (
 
 func updateChatDisplay(chatView *tview.TextView, chat *storage.ChatSession) {
 	chatView.Clear()
+	var speaker string
 
 	for _, msg := range chat.Messages {
 		color := "[white]"
 
 		if msg.Role == "user" {
 			color = "[green]"
+			speaker = "You"
 		} else {
 			color = "[blue]"
+			speaker = "DeepSeek"
 		}
 
-		fmt.Fprintf(chatView, "%s%s:[-] %s\n", color, msg.Role, msg.Content)
+		fmt.Fprintf(chatView, "%s%s:[-] %s\n", color, speaker, msg.Content)
 	}
 
 	chatView.ScrollToEnd()
@@ -118,7 +121,7 @@ func main() {
 			})
 
 			currentChat.Messages = append(currentChat.Messages, storage.Message{
-				Role:    "DeepSeek",
+				Role:    "assistant",
 				Content: "",
 			})
 			updateChatDisplay(chatView, currentChat)
