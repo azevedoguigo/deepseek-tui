@@ -2,8 +2,9 @@
 
 ✨ An elegant terminal interface (TUI) for interacting with DeepSeek LLM models via Ollama, built in Go!
 
+![Gravação de tela de 2025-02-14 19-12-59](https://github.com/user-attachments/assets/83d0c418-4eff-4261-905f-c4846b05ad85)
 
-## Main Features![Gravação de tela de 2025-02-14 19-12-59](https://github.com/user-attachments/assets/83d0c418-4eff-4261-905f-c4846b05ad85)
+## Main Features
 
 🚀 **Intuitive Interface**
 - Conversation list in the left sidebar
