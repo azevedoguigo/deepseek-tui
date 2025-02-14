@@ -6,12 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
-	"path/filepath"
 	"sort"
 	"sync"
 	"time"
 
+	"github.com/azevedoguigo/deepseek-tui/internal/storage"
 	"github.com/gdamore/tcell/v2"
 	"github.com/google/uuid"
 	"github.com/rivo/tview"
@@ -27,107 +26,14 @@ var (
 	chatsMutex sync.RWMutex
 )
 
-type Message struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
-
-type ChatSession struct {
-	ID        uuid.UUID `json:"id"`
-	Title     string    `json:"title"`
-	Messages  []Message `json:"messages"`
-	FilePath  string    `json:"-"`
-	CreatedAt time.Time `json:"created_at"`
-}
-
 type OllamaRequest struct {
-	Model    string    `json:"model"`
-	Prompt   string    `json:"prompt"`
-	Stream   bool      `json:"stream"`
-	Messages []Message `json:"messages"`
+	Model    string            `json:"model"`
+	Prompt   string            `json:"prompt"`
+	Stream   bool              `json:"stream"`
+	Messages []storage.Message `json:"messages"`
 }
 
-func ensureConfigDir() error {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return err
-	}
-
-	path := filepath.Join(home, configDir, chatsDir)
-	return os.MkdirAll(path, 0755)
-}
-
-func saveChat(session *ChatSession) error {
-	if err := ensureConfigDir(); err != nil {
-		return err
-	}
-
-	home, _ := os.UserHomeDir()
-	if session.FilePath == "" {
-		session.FilePath = filepath.Join(
-			home,
-			configDir,
-			chatsDir,
-			fmt.Sprintf("chat_%s.json", session.ID),
-		)
-	}
-
-	data, err := json.MarshalIndent(session, "", " ")
-	if err != nil {
-		return err
-	}
-
-	return os.WriteFile(session.FilePath, data, 0644)
-}
-
-func loadChats() (map[string]*ChatSession, error) {
-	if err := ensureConfigDir(); err != nil {
-		return nil, err
-	}
-
-	home, _ := os.UserHomeDir()
-
-	chatsFile, err := os.ReadDir(filepath.Join(home, configDir, chatsDir))
-	if err != nil {
-		return nil, err
-	}
-
-	chats := make(map[string]*ChatSession)
-	for _, f := range chatsFile {
-		if f.IsDir() {
-			continue
-		}
-
-		data, err := os.ReadFile(filepath.Join(home, configDir, chatsDir, f.Name()))
-		if err != nil {
-			return nil, err
-		}
-
-		var chat ChatSession
-		if err := json.Unmarshal(data, &chat); err == nil {
-			chat.FilePath = filepath.Join(home, configDir, chatsDir, f.Name())
-			chats[chat.ID.String()] = &chat
-		}
-	}
-
-	return chats, nil
-}
-
-func deleteChat(chat *ChatSession, chats map[string]*ChatSession) error {
-	if chat.FilePath == "" {
-		return fmt.Errorf("chat path not found")
-	}
-
-	if err := os.Remove(chat.FilePath); err != nil {
-		return err
-	}
-
-	delete(chats, chat.ID.String())
-
-	return nil
-}
-
-func updateChatDisplay(chatView *tview.TextView, chat *ChatSession) {
+func updateChatDisplay(chatView *tview.TextView, chat *storage.ChatSession) {
 	chatView.Clear()
 
 	for _, msg := range chat.Messages {
@@ -145,7 +51,7 @@ func updateChatDisplay(chatView *tview.TextView, chat *ChatSession) {
 	chatView.ScrollToEnd()
 }
 
-func queryOllamaStream(messages []Message, callback func(string)) error {
+func queryOllamaStream(messages []storage.Message, callback func(string)) error {
 	requestData := OllamaRequest{
 		Model:    "deepseek-r1",
 		Stream:   true,
@@ -189,10 +95,10 @@ func main() {
 	app := tview.NewApplication()
 
 	chatsMutex.Lock()
-	chats, err := loadChats()
+	chats, err := storage.LoadChats(configDir, chatsDir)
 	if err != nil {
 		fmt.Printf("Error to load chats %v:", err)
-		chats = make(map[string]*ChatSession)
+		chats = make(map[string]*storage.ChatSession)
 	}
 	chatsMutex.Unlock()
 
@@ -203,7 +109,7 @@ func main() {
 		AddItem("New Chat", "", 'n', nil)
 	chatList.SetBorder(true).SetTitle("Chats")
 
-	var chatOrder []*ChatSession
+	var chatOrder []*storage.ChatSession
 	chatsMutex.RLock()
 	for _, chat := range chats {
 		chatOrder = append(chatOrder, chat)
@@ -235,7 +141,7 @@ func main() {
 	mainFlex.AddItem(chatList, 20, 1, false).
 		AddItem(chatFlex, 0, 1, true)
 
-	var currentChat *ChatSession
+	var currentChat *storage.ChatSession
 
 	inputField.SetDoneFunc(func(key tcell.Key) {
 		if key == tcell.KeyEnter {
@@ -243,10 +149,10 @@ func main() {
 			inputField.SetText("")
 
 			if currentChat == nil {
-				currentChat = &ChatSession{
+				currentChat = &storage.ChatSession{
 					ID:        uuid.New(),
 					Title:     fmt.Sprintf("Chat %d", len(chats)+1),
-					Messages:  []Message{},
+					Messages:  []storage.Message{},
 					CreatedAt: time.Now(),
 				}
 
@@ -256,18 +162,18 @@ func main() {
 				chatsMutex.Unlock()
 			}
 
-			currentChat.Messages = append(currentChat.Messages, Message{
+			currentChat.Messages = append(currentChat.Messages, storage.Message{
 				Role:    "user",
 				Content: userInput,
 			})
 
-			currentChat.Messages = append(currentChat.Messages, Message{
+			currentChat.Messages = append(currentChat.Messages, storage.Message{
 				Role:    "assistant",
 				Content: "",
 			})
 			updateChatDisplay(chatView, currentChat)
 
-			history := make([]Message, len(currentChat.Messages))
+			history := make([]storage.Message, len(currentChat.Messages))
 			copy(history, currentChat.Messages)
 
 			go func() {
@@ -291,7 +197,7 @@ func main() {
 
 				chatsMutex.Lock()
 				defer chatsMutex.Unlock()
-				if err := saveChat(currentChat); err != nil {
+				if err := storage.SaveChat(configDir, chatsDir, currentChat); err != nil {
 					app.QueueUpdateDraw(func() {
 						currentChat.Messages[assistantIndex].Content += "\n\n[red]Error to save " + err.Error() + "[-]"
 						updateChatDisplay(chatView, currentChat)
@@ -316,7 +222,7 @@ func main() {
 							defer chatsMutex.Unlock()
 
 							if chat, exists := chats[secondary]; exists {
-								if err := deleteChat(chat, chats); err == nil {
+								if err := storage.DeleteChat(chat, chats); err == nil {
 									chatList.RemoveItem(currentItem)
 
 									if currentChat != nil && currentChat.ID.String() == secondary {
