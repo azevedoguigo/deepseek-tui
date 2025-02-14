@@ -2,9 +2,8 @@
 
 ✨ An elegant terminal interface (TUI) for interacting with DeepSeek LLM models via Ollama, built in Go!
 
-![Captura de tela de 2025-02-14 01-14-50](https://github.com/user-attachments/assets/9cbdd3c9-e587-46d2-8d5c-d28c6eb21111)
 
-## Main Features
+## Main Features![Gravação de tela de 2025-02-14 19-12-59](https://github.com/user-attachments/assets/83d0c418-4eff-4261-905f-c4846b05ad85)
 
 🚀 **Intuitive Interface**
 - Conversation list in the left sidebar
@@ -29,8 +28,9 @@
 ## Installation
 
 ```bash
-git clone https://github.com/seu-usuario/deepseek-tui-chat.git
-cd deepseek-tui-chat
+git clone https://github.com/azevedoguigo/deepseek-tui
+cd deepseek-tui
 go mod download
+cd cmd/app
 go build -o deepseek-tui
 ./deepseek-tui
